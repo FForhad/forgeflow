@@ -1,0 +1,3 @@
+"""
+Accounts application package.
+"""
