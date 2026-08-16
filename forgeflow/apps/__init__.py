@@ -1,0 +1,3 @@
+"""
+ForgeFlow local applications namespace.
+"""
