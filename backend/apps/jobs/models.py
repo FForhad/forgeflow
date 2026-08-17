@@ -41,6 +41,12 @@ class Job(models.Model):
         db_index=True,
     )
     queue = models.CharField(max_length=100, default='default', db_index=True)
+    max_retries = models.PositiveIntegerField(default=3)
+    retry_count = models.PositiveIntegerField(default=0)
+    backoff_base = models.PositiveIntegerField(default=2)
+    max_backoff = models.PositiveIntegerField(default=300)
+    use_jitter = models.BooleanField(default=False)
+    next_retry_at = models.DateTimeField(null=True, blank=True, db_index=True)
     result = models.JSONField(null=True, blank=True)
     error = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -56,6 +62,7 @@ class Job(models.Model):
         indexes = [
             models.Index(fields=['organization', 'status']),
             models.Index(fields=['queue', 'status', 'priority']),
+            models.Index(fields=['status', 'next_retry_at']),
         ]
 
     def __str__(self):

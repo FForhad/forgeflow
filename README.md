@@ -198,7 +198,7 @@ source .venv/bin/activate && cd backend
 pytest -v
 ```
 
-All 52 test cases across authentication, multi-tenant isolation, RBAC matrices, Redis queue primitives, enqueue REST API, and Custom Worker execution lifecycle will execute.
+All 61 test cases across authentication, multi-tenant isolation, RBAC matrices, Redis queue primitives, Custom Worker execution lifecycle, and Exponential Backoff Retries will execute.
 
 ---
 
@@ -212,7 +212,7 @@ All 52 test cases across authentication, multi-tenant isolation, RBAC matrices, 
 - [x] **Phase 6**: Redis Fundamentals Lab & Manual Queue Integration (`LPUSH` / `BRPOP`).
 - [x] **Phase 7**: First Custom Distributed Worker Engine (No Celery) with database state machine & attempt audit trails.
 - [ ] **Phase 8**: Celery Integration & Multi-Worker Fleet Orchestration.
-- [ ] **Phase 9**: Worker timeout detection, heartbeats, and exponential backoff retries.
+- [x] **Phase 9**: Retry Mechanism with Exponential Backoff, Full Jitter, and Redis Sorted Set Delayed Promotion.
 - [ ] **Phase 10**: Scoped API Keys for machine-to-machine worker authentication.
 
 ---

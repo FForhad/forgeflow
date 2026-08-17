@@ -95,3 +95,44 @@ def task_failing(payload: Dict[str, Any]) -> None:
     """Intentionally raises an exception for testing error handling and failure tracing."""
     error_msg = payload.get("error_message", "Intentionally raised failure for testing.")
     raise RuntimeError(error_msg)
+
+
+@register_task("flaky_service")
+def task_flaky_service(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Simulates a flaky upstream dependency that fails N times before recovering.
+    Payload: {"key": "test-flaky-1", "fail_times": 2}
+    """
+    from apps.core.redis_client import get_redis_client
+    from apps.jobs.exceptions import ServiceUnavailableError
+
+    key = payload.get("key", "default_flaky")
+    fail_times = int(payload.get("fail_times", 2))
+    redis_key = f"forgeflow:task:flaky:{key}"
+
+    r = get_redis_client()
+    attempts = r.incr(redis_key)
+
+    if attempts <= fail_times:
+        raise ServiceUnavailableError(
+            f"HTTP 503 Upstream payment gateway unavailable (attempt #{attempts} of {fail_times})"
+        )
+
+    # Cleanup counter on success
+    r.delete(redis_key)
+    return {
+        "status": "success",
+        "recovered_after_attempts": attempts,
+        "message": "Downstream payment processed successfully.",
+    }
+
+
+@register_task("permanent_fail")
+def task_permanent_fail(payload: Dict[str, Any]) -> None:
+    """
+    Simulates a fatal non-retryable error (e.g. malformed payload).
+    """
+    from apps.jobs.exceptions import InvalidPayloadError
+    raise InvalidPayloadError(
+        payload.get("error_message", "Invalid payload: missing required 'customer_id' parameter.")
+    )

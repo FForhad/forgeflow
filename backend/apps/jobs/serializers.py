@@ -39,6 +39,12 @@ class JobSerializer(serializers.ModelSerializer):
             'status',
             'priority',
             'queue',
+            'max_retries',
+            'retry_count',
+            'backoff_base',
+            'max_backoff',
+            'use_jitter',
+            'next_retry_at',
             'result',
             'error',
             'created_at',
@@ -52,6 +58,8 @@ class JobSerializer(serializers.ModelSerializer):
             'organization_id',
             'organization_name',
             'status',
+            'retry_count',
+            'next_retry_at',
             'result',
             'error',
             'created_at',
@@ -66,6 +74,10 @@ class JobCreateSerializer(serializers.ModelSerializer):
     organization_id = serializers.UUIDField(required=False, write_only=True)
     priority = serializers.IntegerField(default=2, required=False)
     queue = serializers.CharField(default='default', required=False)
+    max_retries = serializers.IntegerField(default=3, required=False)
+    backoff_base = serializers.IntegerField(default=2, required=False)
+    max_backoff = serializers.IntegerField(default=300, required=False)
+    use_jitter = serializers.BooleanField(default=False, required=False)
     auto_enqueue = serializers.BooleanField(default=False, required=False, write_only=True)
 
     class Meta:
@@ -78,6 +90,10 @@ class JobCreateSerializer(serializers.ModelSerializer):
             'payload',
             'priority',
             'queue',
+            'max_retries',
+            'backoff_base',
+            'max_backoff',
+            'use_jitter',
             'status',
             'auto_enqueue',
             'created_at',
