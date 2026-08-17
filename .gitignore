@@ -11,6 +11,7 @@ ENV/
 .env
 .env.local
 forgeflow/.env
+backend/.env
 
 # Python & Caches
 __pycache__/
