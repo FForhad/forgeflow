@@ -74,7 +74,7 @@ class MembershipSerializer(serializers.ModelSerializer):
 
 
 class MembershipCreateSerializer(serializers.Serializer):
-    email = serializers.EmailField(required=True)
+    email = serializers.EmailField(write_only=True, required=True)
     role = serializers.ChoiceField(choices=MembershipRole.choices, default=MembershipRole.DEVELOPER)
 
     def validate(self, attrs):
@@ -98,6 +98,9 @@ class MembershipCreateSerializer(serializers.Serializer):
             organization=organization,
             role=validated_data['role'],
         )
+
+    def to_representation(self, instance):
+        return MembershipSerializer(instance, context=self.context).data
 
 
 class MembershipUpdateSerializer(serializers.ModelSerializer):
