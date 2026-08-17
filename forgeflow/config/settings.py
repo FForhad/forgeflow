@@ -43,6 +43,7 @@ THIRD_PARTY_APPS = [
     "rest_framework",
     "rest_framework_simplejwt",
     "rest_framework_simplejwt.token_blacklist",
+    "drf_spectacular",
 ]
 
 LOCAL_APPS = [
@@ -166,6 +167,7 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
         "rest_framework.renderers.BrowsableAPIRenderer",
@@ -175,6 +177,22 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.FormParser",
         "rest_framework.parsers.MultiPartParser",
     ],
+}
+
+# Swagger / OpenAPI Settings (drf-spectacular)
+SPECTACULAR_SETTINGS = {
+    "TITLE": "ForgeFlow API",
+    "DESCRIPTION": (
+        "Distributed Job Processing & Orchestration Platform API.\n\n"
+        "Features:\n"
+        "- Multi-tenant Organization & Team management\n"
+        "- Role-Based Access Control (OWNER > ADMIN > DEVELOPER > VIEWER)\n"
+        "- JWT Authentication with Refresh Token rotation & blacklisting\n"
+        "- Job submission, state machine tracking, attempt observability, and lifecycle management"
+    ),
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
 }
 
 # Simple JWT Settings

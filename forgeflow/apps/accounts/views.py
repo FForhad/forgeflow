@@ -1,3 +1,4 @@
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import generics, status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -13,6 +14,7 @@ from apps.accounts.serializers import (
 )
 
 
+@extend_schema(tags=['Authentication'], summary='Register a new user')
 class RegisterView(generics.CreateAPIView):
     """
     Register a new user account and return JWT access and refresh tokens.
@@ -38,6 +40,7 @@ class RegisterView(generics.CreateAPIView):
         )
 
 
+@extend_schema(tags=['Authentication'], summary='Login (obtain JWT tokens)')
 class LoginView(TokenObtainPairView):
     """
     Authenticate with email and password to obtain JWT access and refresh tokens.
@@ -46,6 +49,7 @@ class LoginView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 
 
+@extend_schema(tags=['Authentication'], summary='Refresh access token')
 class RefreshView(TokenRefreshView):
     """
     Submit a valid refresh token to obtain a new access token.
@@ -53,6 +57,15 @@ class RefreshView(TokenRefreshView):
     permission_classes = [AllowAny]
 
 
+@extend_schema(
+    tags=['Authentication'],
+    summary='Logout (revoke refresh token)',
+    request=LogoutSerializer,
+    responses={
+        200: OpenApiResponse(description="Successfully logged out."),
+        400: OpenApiResponse(description="Invalid or missing refresh token."),
+    },
+)
 class LogoutView(APIView):
     """
     Blacklist the refresh token to invalidate future refresh attempts.
@@ -69,6 +82,11 @@ class LogoutView(APIView):
         )
 
 
+@extend_schema(
+    tags=['Authentication'],
+    summary='Get current user profile',
+    responses={200: UserSerializer},
+)
 class CurrentUserView(APIView):
     """
     Retrieve currently authenticated user's profile details.

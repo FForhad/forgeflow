@@ -1,14 +1,12 @@
 from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import extend_schema, extend_schema_view
 from rest_framework import generics, status
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework.views import APIView
 
 from apps.organizations.models import Membership, MembershipRole, Organization
 from apps.organizations.permissions import (
     IsOrgAdminOrAbove,
-    IsOrganizationMember,
     IsOrgOwner,
     IsOrgViewerOrAbove,
 )
@@ -21,6 +19,10 @@ from apps.organizations.serializers import (
 )
 
 
+@extend_schema_view(
+    get=extend_schema(tags=['Organizations'], summary='List user organizations (Tenant Isolation)'),
+    post=extend_schema(tags=['Organizations'], summary='Create new organization (Creator becomes OWNER)'),
+)
 class OrganizationListCreateView(generics.ListCreateAPIView):
     """
     List all organizations the authenticated user belongs to (Tenant Isolation),
@@ -34,10 +36,15 @@ class OrganizationListCreateView(generics.ListCreateAPIView):
         return OrganizationSerializer
 
     def get_queryset(self):
-        # Strict Tenant Isolation: Only return organizations the user is a member of
         return Organization.objects.filter(memberships__user=self.request.user).distinct()
 
 
+@extend_schema_view(
+    get=extend_schema(tags=['Organizations'], summary='Retrieve organization details'),
+    put=extend_schema(tags=['Organizations'], summary='Update organization (ADMIN+)'),
+    patch=extend_schema(tags=['Organizations'], summary='Partial update organization (ADMIN+)'),
+    delete=extend_schema(tags=['Organizations'], summary='Delete organization (OWNER only)'),
+)
 class OrganizationDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     Retrieve, update, or delete an organization with role-based permissions:
@@ -61,6 +68,10 @@ class OrganizationDetailView(generics.RetrieveUpdateDestroyAPIView):
         return org
 
 
+@extend_schema_view(
+    get=extend_schema(tags=['Memberships'], summary='List members in organization (VIEWER+)'),
+    post=extend_schema(tags=['Memberships'], summary='Invite / add member to organization (ADMIN+)'),
+)
 class MemberListCreateView(generics.ListCreateAPIView):
     """
     List members of an organization (VIEWER+) or invite/add a new member (ADMIN+).
@@ -86,6 +97,12 @@ class MemberListCreateView(generics.ListCreateAPIView):
         return Membership.objects.filter(organization=org).select_related('user')
 
 
+@extend_schema_view(
+    get=extend_schema(tags=['Memberships'], summary='Retrieve membership details (ADMIN+)'),
+    put=extend_schema(tags=['Memberships'], summary='Update membership role (ADMIN+)'),
+    patch=extend_schema(tags=['Memberships'], summary='Partial update membership role (ADMIN+)'),
+    delete=extend_schema(tags=['Memberships'], summary='Remove member from organization (ADMIN+)'),
+)
 class MemberDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     Update member role (ADMIN+) or remove member from organization (ADMIN+).

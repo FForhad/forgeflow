@@ -1,4 +1,5 @@
 from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema, extend_schema_view
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
@@ -15,6 +16,24 @@ from apps.organizations.permissions import (
 )
 
 
+@extend_schema_view(
+    get=extend_schema(
+        tags=['Jobs'],
+        summary='List jobs (with filters)',
+        description='Lists all jobs belonging to organizations the authenticated user is a member of.',
+        parameters=[
+            OpenApiParameter(name='status', description='Filter by job status (PENDING, RUNNING, SUCCESS, FAILED, CANCELLED)', required=False, type=str),
+            OpenApiParameter(name='queue', description='Filter by queue name', required=False, type=str),
+            OpenApiParameter(name='type', description='Filter by job type', required=False, type=str),
+            OpenApiParameter(name='organization_id', description='Filter by organization ID', required=False, type=str),
+        ],
+    ),
+    post=extend_schema(
+        tags=['Jobs'],
+        summary='Submit and store a new job (initial status PENDING)',
+        description='Submits a new job. User must have DEVELOPER or above role in the target organization.',
+    ),
+)
 class JobRootListCreateView(generics.ListCreateAPIView):
     """
     POST /api/v1/jobs/ - Create a job in user's organization (DEVELOPER+).
@@ -28,14 +47,12 @@ class JobRootListCreateView(generics.ListCreateAPIView):
         return JobSerializer
 
     def get_queryset(self):
-        # Tenant Isolation: only return jobs for orgs the user is a member of
         user_org_ids = Membership.objects.filter(
             user=self.request.user
         ).values_list('organization_id', flat=True)
 
         qs = Job.objects.filter(organization_id__in=user_org_ids).prefetch_related('attempts')
 
-        # Query parameter filtering
         status_param = self.request.query_params.get('status')
         if status_param:
             qs = qs.filter(status=status_param.upper())
@@ -55,6 +72,13 @@ class JobRootListCreateView(generics.ListCreateAPIView):
         return qs
 
 
+@extend_schema_view(
+    get=extend_schema(
+        tags=['Jobs'],
+        summary='Retrieve job details and attempt history',
+        description='Returns job data, payload, state, timestamps, and list of execution attempts.',
+    )
+)
 class JobRootDetailView(generics.RetrieveAPIView):
     """
     GET /api/v1/jobs/{id}/ - Retrieve job details and attempts history.
@@ -65,7 +89,6 @@ class JobRootDetailView(generics.RetrieveAPIView):
     def get_object(self):
         job = get_object_or_404(Job.objects.prefetch_related('attempts'), pk=self.kwargs['pk'])
 
-        # Verify user belongs to the job's organization
         is_member = Membership.objects.filter(
             user=self.request.user,
             organization=job.organization,
@@ -83,6 +106,16 @@ class JobRootCancelView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=['Jobs'],
+        summary='Cancel an active job',
+        request=None,
+        responses={
+            200: JobSerializer,
+            400: OpenApiResponse(description="Job cannot be cancelled (already SUCCESS, FAILED, or CANCELLED)"),
+            403: OpenApiResponse(description="Permission denied (VIEWER cannot cancel jobs)"),
+        },
+    )
     def post(self, request, pk):
         job = get_object_or_404(Job, pk=pk)
 
@@ -110,6 +143,10 @@ class JobRootCancelView(APIView):
 
 # Scoped Views for nested routes (/api/v1/organizations/{org_id}/jobs/)
 
+@extend_schema_view(
+    get=extend_schema(tags=['Organization Jobs'], summary='List jobs in organization (VIEWER+)'),
+    post=extend_schema(tags=['Organization Jobs'], summary='Create job in organization (DEVELOPER+)'),
+)
 class JobListCreateView(generics.ListCreateAPIView):
     def get_permissions(self):
         if self.request.method == 'POST':
@@ -132,6 +169,10 @@ class JobListCreateView(generics.ListCreateAPIView):
         return Job.objects.filter(organization=org).prefetch_related('attempts')
 
 
+@extend_schema_view(
+    get=extend_schema(tags=['Organization Jobs'], summary='Retrieve job in organization (VIEWER+)'),
+    delete=extend_schema(tags=['Organization Jobs'], summary='Delete/Cancel job in organization (DEVELOPER+)'),
+)
 class JobDetailView(generics.RetrieveDestroyAPIView):
     def get_permissions(self):
         if self.request.method == 'DELETE':
@@ -151,6 +192,15 @@ class JobDetailView(generics.RetrieveDestroyAPIView):
 class JobCancelView(APIView):
     permission_classes = [IsAuthenticated, IsOrgDeveloperOrAbove]
 
+    @extend_schema(
+        tags=['Organization Jobs'],
+        summary='Cancel job in organization',
+        request=None,
+        responses={
+            200: JobSerializer,
+            400: OpenApiResponse(description="Cannot cancel completed or failed job"),
+        },
+    )
     def post(self, request, organization_id, pk):
         org = get_object_or_404(Organization, pk=organization_id)
         self.check_object_permissions(request, org)

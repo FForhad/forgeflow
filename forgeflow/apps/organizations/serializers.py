@@ -1,6 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils.text import slugify
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.accounts.serializers import UserSerializer
@@ -18,6 +19,7 @@ class OrganizationSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'slug', 'current_user_role', 'member_count', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_current_user_role(self, obj):
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
@@ -25,6 +27,7 @@ class OrganizationSerializer(serializers.ModelSerializer):
         membership = obj.memberships.filter(user=request.user).first()
         return membership.role if membership else None
 
+    @extend_schema_field(serializers.IntegerField())
     def get_member_count(self, obj):
         return obj.memberships.count()
 
