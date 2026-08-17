@@ -66,6 +66,7 @@ class JobCreateSerializer(serializers.ModelSerializer):
     organization_id = serializers.UUIDField(required=False, write_only=True)
     priority = serializers.IntegerField(default=2, required=False)
     queue = serializers.CharField(default='default', required=False)
+    auto_enqueue = serializers.BooleanField(default=False, required=False, write_only=True)
 
     class Meta:
         model = Job
@@ -78,6 +79,7 @@ class JobCreateSerializer(serializers.ModelSerializer):
             'priority',
             'queue',
             'status',
+            'auto_enqueue',
             'created_at',
         ]
         read_only_fields = ['id', 'status', 'created_at']
@@ -134,7 +136,12 @@ class JobCreateSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        return Job.objects.create(**validated_data)
+        auto_enqueue = validated_data.pop('auto_enqueue', False)
+        job = Job.objects.create(**validated_data)
+        if auto_enqueue:
+            from apps.jobs.queue import enqueue_job
+            enqueue_job(job)
+        return job
 
     def to_representation(self, instance):
         return JobSerializer(instance, context=self.context).data

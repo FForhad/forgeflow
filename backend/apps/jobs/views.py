@@ -141,6 +141,47 @@ class JobRootCancelView(APIView):
         return Response(JobSerializer(job).data, status=status.HTTP_200_OK)
 
 
+class JobRootEnqueueView(APIView):
+    """
+    POST /api/v1/jobs/{id}/enqueue/ - Enqueue a PENDING job into Redis (DEVELOPER+).
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=['Jobs'],
+        summary='Enqueue a pending job into Redis queue',
+        request=None,
+        responses={
+            200: JobSerializer,
+            400: OpenApiResponse(description="Job is not in PENDING status"),
+            403: OpenApiResponse(description="Permission denied"),
+        },
+    )
+    def post(self, request, pk):
+        job = get_object_or_404(Job, pk=pk)
+
+        membership = Membership.objects.filter(
+            user=request.user,
+            organization=job.organization,
+        ).first()
+
+        if not membership:
+            raise PermissionDenied("You do not have access to jobs in this organization.")
+
+        if ROLE_WEIGHTS.get(membership.role, 0) < ROLE_WEIGHTS[MembershipRole.DEVELOPER]:
+            raise PermissionDenied("VIEWER role cannot enqueue jobs. DEVELOPER or above is required.")
+
+        if job.status != JobStatus.PENDING:
+            return Response(
+                {"detail": f"Cannot enqueue a job with status '{job.status}'. Only PENDING jobs can be enqueued."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.jobs.queue import enqueue_job
+        enqueue_job(job)
+        return Response(JobSerializer(job).data, status=status.HTTP_200_OK)
+
+
 # Scoped Views for nested routes (/api/v1/organizations/{org_id}/jobs/)
 
 @extend_schema_view(
@@ -214,4 +255,32 @@ class JobCancelView(APIView):
 
         job.status = JobStatus.CANCELLED
         job.save(update_fields=['status'])
+        return Response(JobSerializer(job).data, status=status.HTTP_200_OK)
+
+
+class JobEnqueueView(APIView):
+    permission_classes = [IsAuthenticated, IsOrgDeveloperOrAbove]
+
+    @extend_schema(
+        tags=['Organization Jobs'],
+        summary='Enqueue job in organization into Redis queue',
+        request=None,
+        responses={
+            200: JobSerializer,
+            400: OpenApiResponse(description="Cannot enqueue non-pending job"),
+        },
+    )
+    def post(self, request, organization_id, pk):
+        org = get_object_or_404(Organization, pk=organization_id)
+        self.check_object_permissions(request, org)
+        job = get_object_or_404(Job, pk=pk, organization=org)
+
+        if job.status != JobStatus.PENDING:
+            return Response(
+                {"detail": f"Cannot enqueue a job with status '{job.status}'. Only PENDING jobs can be enqueued."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from apps.jobs.queue import enqueue_job
+        enqueue_job(job)
         return Response(JobSerializer(job).data, status=status.HTTP_200_OK)
