@@ -108,6 +108,129 @@ class JobAndJobAttemptModelTests(TestCase):
             )
 
 
+class JobRootAPITests(APITestCase):
+    """
+    Tests for direct REST API endpoints:
+    POST /api/v1/jobs/
+    GET  /api/v1/jobs/
+    GET  /api/v1/jobs/{id}/
+    POST /api/v1/jobs/{id}/cancel/
+    """
+    def setUp(self):
+        self.user = User.objects.create_user(email='dev@forgeflow.dev', password='Password123!')
+        self.org = Organization.objects.create(name='Acme Processing', slug='acme-proc')
+        Membership.objects.create(user=self.user, organization=self.org, role=MembershipRole.DEVELOPER)
+
+        self.jobs_url = reverse('job-list')
+
+    def auth_user(self):
+        token = str(AccessToken.for_user(self.user))
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+
+    def test_post_job_creates_pending_job_in_postgres(self):
+        self.auth_user()
+        payload = {
+            "name": "generate-report",
+            "type": "python_function",
+            "payload": {
+                "report_id": 123
+            },
+            "priority": 5,
+            "queue": "default"
+        }
+
+        response = self.client.post(self.jobs_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        data = response.json()
+        self.assertEqual(data['name'], 'generate-report')
+        self.assertEqual(data['type'], 'python_function')
+        self.assertEqual(data['payload'], {'report_id': 123})
+        self.assertEqual(data['priority'], 5)
+        self.assertEqual(data['queue'], 'default')
+        self.assertEqual(data['status'], 'PENDING')
+        self.assertIsNotNone(data['id'])
+        self.assertEqual(data['organization_id'], str(self.org.id))
+
+        # Verify persisted in PostgreSQL
+        job_in_db = Job.objects.get(id=data['id'])
+        self.assertEqual(job_in_db.status, JobStatus.PENDING)
+        self.assertEqual(job_in_db.priority, 5)
+        self.assertEqual(job_in_db.organization, self.org)
+
+    def test_get_jobs_list_and_filters(self):
+        self.auth_user()
+        job1 = Job.objects.create(
+            organization=self.org,
+            name='job-1',
+            type='report.daily',
+            status=JobStatus.PENDING,
+            queue='default',
+        )
+        job2 = Job.objects.create(
+            organization=self.org,
+            name='job-2',
+            type='video.render',
+            status=JobStatus.RUNNING,
+            queue='heavy',
+        )
+
+        # List all jobs
+        response = self.client.get(self.jobs_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.json()), 2)
+
+        # Filter by status=PENDING
+        res_pending = self.client.get(f"{self.jobs_url}?status=PENDING")
+        self.assertEqual(len(res_pending.json()), 1)
+        self.assertEqual(res_pending.json()[0]['name'], 'job-1')
+
+        # Filter by queue=heavy
+        res_queue = self.client.get(f"{self.jobs_url}?queue=heavy")
+        self.assertEqual(len(res_queue.json()), 1)
+        self.assertEqual(res_queue.json()[0]['name'], 'job-2')
+
+    def test_get_job_detail_by_id(self):
+        self.auth_user()
+        job = Job.objects.create(
+            organization=self.org,
+            name='invoice-pdf',
+            type='invoice.generate',
+            payload={'invoice_id': 456},
+            status=JobStatus.PENDING,
+        )
+
+        detail_url = reverse('job-detail', kwargs={'pk': job.id})
+        response = self.client.get(detail_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertEqual(data['id'], str(job.id))
+        self.assertEqual(data['status'], 'PENDING')
+        self.assertEqual(data['payload'], {'invoice_id': 456})
+        self.assertEqual(data['attempts'], [])  # No worker picked it up yet
+
+    def test_cancel_job_endpoint(self):
+        self.auth_user()
+        job = Job.objects.create(
+            organization=self.org,
+            name='sync-task',
+            type='sync.full',
+            status=JobStatus.PENDING,
+        )
+
+        cancel_url = reverse('job-cancel', kwargs={'pk': job.id})
+        response = self.client.post(cancel_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()['status'], 'CANCELLED')
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, JobStatus.CANCELLED)
+
+        # Attempting to cancel again returns 400
+        res_again = self.client.post(cancel_url)
+        self.assertEqual(res_again.status_code, status.HTTP_400_BAD_REQUEST)
+
+
 class JobRBACAPITests(APITestCase):
     """
     Tests asserting the complete RBAC matrix:
@@ -139,9 +262,9 @@ class JobRBACAPITests(APITestCase):
             status=JobStatus.QUEUED,
         )
 
-        self.list_create_url = reverse('job-list-create', kwargs={'organization_id': self.org.id})
-        self.detail_url = reverse('job-detail', kwargs={'organization_id': self.org.id, 'pk': self.job.id})
-        self.cancel_url = reverse('job-cancel', kwargs={'organization_id': self.org.id, 'pk': self.job.id})
+        self.list_create_url = reverse('org-jobs:org-job-list-create', kwargs={'organization_id': self.org.id})
+        self.detail_url = reverse('org-jobs:org-job-detail', kwargs={'organization_id': self.org.id, 'pk': self.job.id})
+        self.cancel_url = reverse('org-jobs:org-job-cancel', kwargs={'organization_id': self.org.id, 'pk': self.job.id})
 
     def auth_as(self, user):
         token = str(AccessToken.for_user(user))

@@ -37,7 +37,6 @@ class Job(models.Model):
         db_index=True,
     )
     priority = models.IntegerField(
-        choices=JobPriority.choices,
         default=JobPriority.MEDIUM,
         db_index=True,
     )
