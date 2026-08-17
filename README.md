@@ -38,9 +38,37 @@ User (JWT Identity)
 | :--- | :--- | :---: | :---: | :---: | :---: |
 | **View Jobs** | `GET /api/v1/jobs/` | ✅ `200` | ✅ `200` | ✅ `200` | ✅ `200` |
 | **Create Jobs** | `POST /api/v1/jobs/` | ✅ `201` | ✅ `201` | ✅ `201` | ❌ `403` |
+| **Enqueue Jobs** | `POST /api/v1/jobs/{id}/enqueue/` | ✅ `200` | ✅ `200` | ✅ `200` | ❌ `403` |
 | **Cancel Jobs** | `POST /api/v1/jobs/{id}/cancel/` | ✅ `200` | ✅ `200` | ✅ `200` | ❌ `403` |
 | **Manage Members** | `POST /api/v1/organizations/{id}/members/` | ✅ `201` | ✅ `201` | ❌ `403` | ❌ `403` |
 | **Delete Org** | `DELETE /api/v1/organizations/{id}/` | ✅ `204` | ❌ `403` | ❌ `403` | ❌ `403` |
+
+---
+
+## ⚙️ Distributed Architecture Flow (Phase 6 & 7)
+
+```text
+Client (REST HTTP)
+       │  POST /api/v1/jobs/ (status: PENDING)
+       │  POST /api/v1/jobs/{id}/enqueue/
+       ▼
+  Django API
+       │
+       ├── 1. Write state to PostgreSQL (status: QUEUED, queued_at: now)
+       │
+       └── 2. LPUSH jobs:<queue> <job_id>
+               │
+               ▼
+          Redis Queue
+               │
+               │  3. BRPOP jobs:<queue> (Blocking FIFO Pop)
+               ▼
+        Custom Worker (Python Engine - No Celery)
+               │
+               ├── 4. Update PostgreSQL: status = RUNNING, record JobAttempt #N
+               ├── 5. Execute task logic (echo, math_compute, sleep_task, etc.)
+               └── 6. Update PostgreSQL: status = SUCCESS / FAILED, save result / error
+```
 
 ---
 
@@ -48,6 +76,8 @@ User (JWT Identity)
 
 - **Backend Framework**: Django 5.1 & Django REST Framework 3.15
 - **Database**: PostgreSQL 16 (running via Docker on host port `5434`)
+- **Queue / In-Memory Store**: Redis 7 (running via Docker on host port `6379`)
+- **Worker Engine**: Custom asynchronous worker with signal trapping, attempt auditing, and FIFO queues
 - **Authentication**: `djangorestframework-simplejwt` with token blacklist
 - **API Documentation**: `drf-spectacular` (OpenAPI 3.0 / Swagger UI / Redoc)
 - **Testing**: `pytest` & `pytest-django`
@@ -61,15 +91,21 @@ ForgeFlow/
 ├── backend/                      # Django backend application
 │   ├── apps/
 │   │   ├── accounts/             # User model, JWT registration, login, refresh, logout
-│   │   ├── core/                 # Health checks & database connectivity verification
+│   │   ├── core/                 # Health checks (DB + Redis) & Redis Lab command
+│   │   │   ├── redis_client.py   # Redis connection pool & health verification
+│   │   │   └── management/commands/redis_lab.py  # Interactive Redis Fundamentals Lab
 │   │   ├── jobs/                 # Job submission, status state machine, attempt history
+│   │   │   ├── queue.py          # RedisJobQueue (LPUSH / BRPOP primitives)
+│   │   │   ├── tasks.py          # Extensible Task Handler Registry (echo, math, etc.)
+│   │   │   ├── worker.py         # CustomWorker distributed execution engine
+│   │   │   └── management/commands/run_worker.py # Custom Worker CLI runner
 │   │   └── organizations/        # Multi-tenancy, memberships, teams, API keys, RBAC
 │   ├── config/                   # Django settings, URLs, ASGI/WSGI configuration
 │   ├── manage.py
 │   ├── pytest.ini
 │   ├── requirements.txt          # Python dependencies
 │   └── .env                      # Local environment configuration
-├── docker-compose.yml            # PostgreSQL 16 service definition
+├── docker-compose.yml            # PostgreSQL 16 & Redis 7 service definitions
 ├── LICENSE
 └── README.md
 ```
@@ -82,9 +118,9 @@ ForgeFlow/
 - Docker & Docker Compose
 - Python 3.12+
 
-### 2. Start PostgreSQL Database
+### 2. Start PostgreSQL & Redis Services
 ```bash
-docker compose up -d db
+docker compose up -d
 ```
 
 ### 3. Setup Virtual Environment
@@ -107,6 +143,10 @@ DB_USER=postgres
 DB_PASSWORD=postgrespassword
 DB_HOST=127.0.0.1
 DB_PORT=5434
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
 ### 5. Run Migrations
@@ -115,7 +155,23 @@ cd backend
 python manage.py migrate
 ```
 
-### 6. Start the Development Server
+### 6. Interactive Redis Fundamentals Lab (Phase 6)
+Run the interactive lab to explore Redis data structures, expiration, atomic transactions, pub/sub, and queuing:
+```bash
+python manage.py redis_lab
+```
+
+### 7. Run the Custom Worker (Phase 7)
+Launch the distributed custom worker to consume and process jobs:
+```bash
+python manage.py run_worker --queues default,high
+```
+Or run in **burst mode** (process all pending queue items and exit):
+```bash
+python manage.py run_worker --burst
+```
+
+### 8. Start the Development API Server
 ```bash
 python manage.py runserver
 ```
@@ -142,7 +198,7 @@ source .venv/bin/activate && cd backend
 pytest -v
 ```
 
-All 37 test cases across authentication, multi-tenant isolation, RBAC matrices, and job lifecycles will execute.
+All 52 test cases across authentication, multi-tenant isolation, RBAC matrices, Redis queue primitives, enqueue REST API, and Custom Worker execution lifecycle will execute.
 
 ---
 
@@ -153,9 +209,11 @@ All 37 test cases across authentication, multi-tenant isolation, RBAC matrices, 
 - [x] **Phase 3**: JWT authentication (Register, Login, Token Refresh Rotation, Logout Blacklist).
 - [x] **Phase 4**: Multi-tenancy & 4-tier RBAC permission hierarchy.
 - [x] **Phase 5**: Top-level Job REST API (`POST`, `GET`, `GET by ID`, `POST cancel`) and Swagger docs.
-- [ ] **Phase 6**: Redis Queue Integration & Async Worker Execution Engine.
-- [ ] **Phase 7**: Worker timeout detection, heartbeats, and exponential backoff retries.
-- [ ] **Phase 8**: Scoped API Keys for machine-to-machine worker authentication.
+- [x] **Phase 6**: Redis Fundamentals Lab & Manual Queue Integration (`LPUSH` / `BRPOP`).
+- [x] **Phase 7**: First Custom Distributed Worker Engine (No Celery) with database state machine & attempt audit trails.
+- [ ] **Phase 8**: Celery Integration & Multi-Worker Fleet Orchestration.
+- [ ] **Phase 9**: Worker timeout detection, heartbeats, and exponential backoff retries.
+- [ ] **Phase 10**: Scoped API Keys for machine-to-machine worker authentication.
 
 ---
 

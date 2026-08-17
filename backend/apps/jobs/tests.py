@@ -334,3 +334,267 @@ class JobRBACAPITests(APITestCase):
         response = self.client.post(self.cancel_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.json()['status'], JobStatus.CANCELLED)
+
+
+class RedisQueueTests(TestCase):
+    def setUp(self):
+        from apps.jobs.queue import RedisJobQueue
+        self.queue = RedisJobQueue(key_prefix="test_jobs")
+        self.queue.clear("default")
+        self.queue.clear("high")
+
+    def tearDown(self):
+        self.queue.clear("default")
+        self.queue.clear("high")
+
+    def test_enqueue_and_dequeue_fifo(self):
+        self.queue.enqueue("default", "job-1")
+        self.queue.enqueue("default", "job-2")
+        self.queue.enqueue("default", "job-3")
+
+        self.assertEqual(self.queue.length("default"), 3)
+
+        # First item out should be job-1 (FIFO)
+        q_name, job_id = self.queue.dequeue("default", timeout=1)
+        self.assertEqual(q_name, "default")
+        self.assertEqual(job_id, "job-1")
+
+        q_name, job_id = self.queue.dequeue("default", timeout=1)
+        self.assertEqual(job_id, "job-2")
+
+        q_name, job_id = self.queue.dequeue("default", timeout=1)
+        self.assertEqual(job_id, "job-3")
+
+        self.assertEqual(self.queue.length("default"), 0)
+
+    def test_dequeue_timeout_when_empty(self):
+        result = self.queue.dequeue("default", timeout=1)
+        self.assertIsNone(result)
+
+    def test_multi_queue_priority_order(self):
+        # When checking ['high', 'default'], items in 'high' are popped first
+        self.queue.enqueue("default", "default-job")
+        self.queue.enqueue("high", "high-job")
+
+        q_name, job_id = self.queue.dequeue(["high", "default"], timeout=1)
+        self.assertEqual(q_name, "high")
+        self.assertEqual(job_id, "high-job")
+
+        q_name, job_id = self.queue.dequeue(["high", "default"], timeout=1)
+        self.assertEqual(q_name, "default")
+        self.assertEqual(job_id, "default-job")
+
+    def test_peek_and_clear(self):
+        self.queue.enqueue("default", "job-a")
+        self.queue.enqueue("default", "job-b")
+        peeked = self.queue.peek("default", count=5)
+        self.assertIn("job-a", peeked)
+        self.assertIn("job-b", peeked)
+
+        self.queue.clear("default")
+        self.assertEqual(self.queue.length("default"), 0)
+
+
+class JobEnqueueAPITests(APITestCase):
+    def setUp(self):
+        from apps.jobs.queue import default_job_queue
+        self.queue = default_job_queue
+        self.queue.clear("default")
+
+        self.user = User.objects.create_user(email='developer@jobflow.dev', password='Password123!')
+        self.org = Organization.objects.create(name='JobFlow Corp', slug='jobflow-corp')
+        Membership.objects.create(user=self.user, organization=self.org, role=MembershipRole.DEVELOPER)
+
+        token = str(AccessToken.for_user(self.user))
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+
+        self.job = Job.objects.create(
+            organization=self.org,
+            name='pending-task',
+            type='echo',
+            payload={'message': 'hello'},
+            status=JobStatus.PENDING,
+            queue='default',
+        )
+        self.enqueue_url = reverse('job-enqueue', kwargs={'pk': self.job.id})
+
+    def tearDown(self):
+        self.queue.clear("default")
+
+    def test_enqueue_pending_job_updates_db_and_pushes_to_redis(self):
+        response = self.client.post(self.enqueue_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertEqual(data['status'], 'QUEUED')
+        self.assertIsNotNone(data['queued_at'])
+
+        # Verify in DB
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, JobStatus.QUEUED)
+        self.assertIsNotNone(self.job.queued_at)
+
+        # Verify item in Redis queue
+        self.assertEqual(self.queue.length("default"), 1)
+        popped = self.queue.dequeue("default", timeout=1)
+        self.assertEqual(popped[1], str(self.job.id))
+
+    def test_enqueue_non_pending_job_returns_400(self):
+        self.job.status = JobStatus.SUCCESS
+        self.job.save()
+
+        response = self.client.post(self.enqueue_url)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Cannot enqueue", response.json()['detail'])
+
+    def test_create_job_with_auto_enqueue(self):
+        payload = {
+            'organization_id': str(self.org.id),
+            'name': 'auto-queued-job',
+            'type': 'echo',
+            'payload': {'key': 'val'},
+            'queue': 'default',
+            'auto_enqueue': True,
+        }
+        create_url = reverse('job-list')
+        response = self.client.post(create_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.json()['status'], 'QUEUED')
+
+        # Verify job was enqueued in Redis
+        popped = self.queue.dequeue("default", timeout=1)
+        self.assertEqual(popped[1], response.json()['id'])
+
+
+class CustomWorkerExecutionTests(TestCase):
+    def setUp(self):
+        from apps.jobs.queue import RedisJobQueue
+        self.queue = RedisJobQueue(key_prefix="test_worker_jobs")
+        self.queue.clear("default")
+        self.queue.clear("high")
+
+        self.org = Organization.objects.create(name='Worker Org', slug='worker-org')
+        from apps.jobs.worker import CustomWorker
+        self.worker = CustomWorker(
+            queues=["high", "default"],
+            timeout=1,
+            worker_id="test-worker-001",
+            queue_instance=self.queue,
+        )
+
+    def tearDown(self):
+        self.queue.clear("default")
+        self.queue.clear("high")
+
+    def test_worker_processes_echo_job_successfully(self):
+        job = Job.objects.create(
+            organization=self.org,
+            name='test-echo',
+            type='echo',
+            payload={'greeting': 'ForgeFlow Worker'},
+            status=JobStatus.QUEUED,
+            queue='default',
+        )
+        self.queue.enqueue("default", str(job.id))
+
+        processed = self.worker.run(burst=True)
+        self.assertEqual(processed, 1)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, JobStatus.SUCCESS)
+        self.assertEqual(job.result, {"status": "echoed", "data": {"greeting": "ForgeFlow Worker"}})
+        self.assertIsNotNone(job.started_at)
+        self.assertIsNotNone(job.completed_at)
+        self.assertIsNone(job.error)
+
+        # Check attempt audit log
+        attempts = list(job.attempts.all())
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0].status, AttemptStatus.SUCCESS)
+        self.assertEqual(attempts[0].worker_id, "test-worker-001")
+        self.assertIsNotNone(attempts[0].duration)
+
+    def test_worker_processes_math_compute_job_successfully(self):
+        job = Job.objects.create(
+            organization=self.org,
+            name='test-math',
+            type='math_compute',
+            payload={'op': 'multiply', 'a': 6, 'b': 7},
+            status=JobStatus.QUEUED,
+            queue='high',
+        )
+        self.queue.enqueue("high", str(job.id))
+
+        processed = self.worker.run(burst=True)
+        self.assertEqual(processed, 1)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, JobStatus.SUCCESS)
+        self.assertEqual(job.result['result'], 42.0)
+
+    def test_worker_handles_failing_job_and_captures_traceback(self):
+        job = Job.objects.create(
+            organization=self.org,
+            name='test-fail',
+            type='failing_task',
+            payload={'error_message': 'Simulated DB deadlock in worker'},
+            status=JobStatus.QUEUED,
+            queue='default',
+        )
+        self.queue.enqueue("default", str(job.id))
+
+        processed = self.worker.run(burst=True)
+        self.assertEqual(processed, 1)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, JobStatus.FAILED)
+        self.assertIn("Simulated DB deadlock", job.error)
+        self.assertIsNotNone(job.completed_at)
+
+        attempts = list(job.attempts.all())
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0].status, AttemptStatus.FAILED)
+        self.assertIn("RuntimeError", attempts[0].error)
+
+    def test_worker_handles_unknown_task_type(self):
+        job = Job.objects.create(
+            organization=self.org,
+            name='test-unknown',
+            type='non_existent_task_type',
+            payload={},
+            status=JobStatus.QUEUED,
+            queue='default',
+        )
+        self.queue.enqueue("default", str(job.id))
+
+        processed = self.worker.run(burst=True)
+        self.assertEqual(processed, 1)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, JobStatus.FAILED)
+        self.assertIn("No handler registered", job.error)
+
+    def test_worker_skips_cancelled_job(self):
+        job = Job.objects.create(
+            organization=self.org,
+            name='test-cancelled',
+            type='echo',
+            payload={},
+            status=JobStatus.CANCELLED,
+            queue='default',
+        )
+        self.queue.enqueue("default", str(job.id))
+
+        processed = self.worker.run(burst=True)
+        self.assertEqual(processed, 0)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, JobStatus.CANCELLED)
+        self.assertEqual(job.attempts.count(), 0)
+
+    def test_worker_handles_nonexistent_job_gracefully(self):
+        # Enqueue a random UUID not in database
+        import uuid
+        self.queue.enqueue("default", str(uuid.uuid4()))
+
+        processed = self.worker.run(burst=True)
+        self.assertEqual(processed, 0)
