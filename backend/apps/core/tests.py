@@ -37,3 +37,29 @@ class HealthCheckAPITest(APITestCase):
                 "database": "disconnected",
             },
         )
+
+    @patch('apps.core.redis_client.check_redis_connection', return_value=True)
+    def test_redis_health_check_returns_200_when_connected(self, mock_check):
+        url = reverse('redis-health-check')
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                "status": "ok",
+                "redis": "connected",
+            },
+        )
+
+    @patch('apps.core.redis_client.check_redis_connection', return_value=False)
+    def test_redis_health_check_returns_503_when_disconnected(self, mock_check):
+        url = reverse('redis-health-check')
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(
+            response.json(),
+            {
+                "status": "unavailable",
+                "redis": "disconnected",
+            },
+        )

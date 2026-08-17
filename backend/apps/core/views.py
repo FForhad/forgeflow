@@ -17,6 +17,11 @@ class DatabaseHealthResponseSerializer(serializers.Serializer):
     database = serializers.CharField(default="connected")
 
 
+class RedisHealthResponseSerializer(serializers.Serializer):
+    status = serializers.CharField(default="ok")
+    redis = serializers.CharField(default="connected")
+
+
 class HealthCheckView(APIView):
     """
     Basic application health check to verify service availability.
@@ -70,3 +75,39 @@ class DatabaseHealthCheckView(APIView):
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+
+
+class RedisHealthCheckView(APIView):
+    """
+    Redis health check verifying connection via ping.
+    Returns 200 with redis: connected if reachable, or 503 if unreachable.
+    """
+    authentication_classes = []
+    permission_classes = []
+
+    @extend_schema(
+        tags=['Health'],
+        summary='Redis Health Check',
+        responses={
+            200: RedisHealthResponseSerializer,
+            503: OpenApiResponse(description="Redis disconnected"),
+        },
+    )
+    def get(self, request, *args, **kwargs):
+        from apps.core.redis_client import check_redis_connection
+
+        if check_redis_connection():
+            return Response(
+                {
+                    "status": "ok",
+                    "redis": "connected",
+                },
+                status=status.HTTP_200_OK,
+            )
+        return Response(
+            {
+                "status": "unavailable",
+                "redis": "disconnected",
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
